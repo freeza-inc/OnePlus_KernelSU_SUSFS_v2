@@ -345,7 +345,22 @@ runs:
         KSUN_DIR="$KERNEL_PLATFORM_DIR/KernelSU-Next"
         mkdir -p "$ARTIFACTS_DIR"
         mkdir -p "$DEBUG_ARTIFACTS_DIR"
-        
+
+        AFDO_PATH_1="$COMMON_KERNEL_DIR/android/gki/aarch64/afdo/kernel.afdo"
+        AFDO_PATH_2="$COMMON_KERNEL_DIR/gki/aarch64/afdo/kernel.afdo"
+
+        # Check which one exists
+        if [ -f "$AFDO_PATH_1" ]; then
+            AFDO_PROFILE="$AFDO_PATH_1"
+        elif [ -f "$AFDO_PATH_2" ]; then
+            AFDO_PROFILE="$AFDO_PATH_2"
+        else
+            echo "ERROR: AFDO profile not found!"
+            echo "  Tried: $AFDO_PATH_1"
+            echo "  Tried: $AFDO_PATH_2"
+            exit 1
+        fi
+
         # Save to environment for later steps
         echo "CONFIG_FOLDER=$CONFIG_DIR" >> "$GITHUB_ENV"
         echo "ARTIFACTS_FOLDER=$ARTIFACTS_DIR" >> "$GITHUB_ENV"
@@ -358,6 +373,7 @@ runs:
         echo "SUSFS_FOLDER=$SUSFS_DIR" >> "$GITHUB_ENV"
         echo "KSU_FOLDER=$KSU_DIR" >> "$GITHUB_ENV"
         echo "KSUN_FOLDER=$KSUN_DIR" >> "$GITHUB_ENV"
+        echo "AFDO_PROFILE_PATH=$AFDO_PROFILE" >> "$GITHUB_ENV"
         
         DEBUG_ZIP_NAME="debug_${OP_MODEL}_${OP_OS_VERSION}.zip"
         echo "DEBUG_ZIP_NAME=$DEBUG_ZIP_NAME" >> "$GITHUB_ENV"
@@ -850,6 +866,13 @@ runs:
         echo "✅ Dependencies cloned"
         echo "::endgroup::"
 
+        git config --global user.email "freeza@gmail.com"
+        git config --global user.name "Build"
+        git remote add google-bbr https://github.com/google/bbr.git
+        git fetch google-bbr v3
+        git show-ref --verify --quiet refs/remotes/google-bbr/v3 || { echo "Error: google-bbr/v3 branch not found"; exit 1; }
+        git merge google-bbr/v3 --allow-unrelated-histories -m "Merge BBR v3 into kernel"
+
     - name: Clean Up ABI Protected Exports
       shell: bash
       run: |
@@ -1086,6 +1109,15 @@ runs:
             sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
           fi
         fi
+        
+        sed -i 's/net->ipv4.sysctl_tcp_ecn = 2;/net->ipv4.sysctl_tcp_ecn = 1;/' ./net/ipv4/tcp_ipv4.c
+        grep "sysctl_tcp_ecn" ./net/ipv4/tcp_ipv4.c
+        sed -i '/\.procname[[:space:]]*=[[:space:]]*"tcp_ecn"/, /^[[:space:]]*\}/ s/SYSCTL_TWO/SYSCTL_ONE/' ./net/ipv4/sysctl_net_ipv4.c
+        grep -A6 '\.procname.*tcp_ecn' ./net/ipv4/sysctl_net_ipv4.c
+        sed -i 's/net->ipv4.sysctl_tcp_pacing_ss_ratio = 200;/net->ipv4.sysctl_tcp_pacing_ss_ratio = 180;/' ./net/ipv4/tcp_ipv4.c
+        sed -i 's/net->ipv4.sysctl_tcp_pacing_ca_ratio = 120;/net->ipv4.sysctl_tcp_pacing_ca_ratio = 110;/' ./net/ipv4/tcp_ipv4.c
+        grep "sysctl_tcp_pacing" ./net/ipv4/tcp_ipv4.c
+        ls ./net/ipv4/ -t | grep -E 'tcp_|sysctl_'
         
         # Fake kernel patch to fix failures
         fake_patched=0
@@ -1418,6 +1450,19 @@ runs:
         CONFIG_IP6_NF_MATCH_HL=y
         EOF
 
+    - name: Add Other tweaks
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Add Other tweaks"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_ZRAM_DEF_COMP="lz4"
+        CONFIG_ZRAM_DEF_COMP_LZ4=y
+        CONFIG_ZRAM_DEF_COMP_LZORLE=n
+        CONFIG_RCU_TRACE=n
+        CONFIG_IP_NF_TARGET_ECN=y
+        EOF
+
     - name: Add IP SET & IPv6_NAT Support
       if: ${{ env.OP_IP_SET == 'true' }}
       shell: bash
@@ -1592,6 +1637,12 @@ runs:
         export KCFLAGS="${KCFLAGS:-} $MAP $MPMAP $FPMAP -no-canonical-prefixes -fdiagnostics-color=never -Qunused-arguments -Wno-unused-command-line-argument -D__ANDROID_COMMON_KERNEL__"
         export KCPPFLAGS="${KCPPFLAGS:-} $MAP $MPMAP $FPMAP"
         
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_AUTOFDO_CLANG=y
+        EOF
+        
+        export CLANG_AUTOFDO_PROFILE="$AFDO_PROFILE_PATH"
+        
         export LLVM=1 LLVM_IAS=1
         export ARCH=arm64 SUBARCH=arm64
         export CROSS_COMPILE=aarch64-linux-gnu-
@@ -1660,7 +1711,7 @@ runs:
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" gki_defconfig
         
-        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-WILD}"
+        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-BeastMode}"
         if [ -n "${LOCAL_LOCALVERSION:-}" ]; then
           scripts/config --file "$OUT/.config" --set-str LOCALVERSION "${LOCAL_LOCALVERSION}"
           scripts/config --file "$OUT/.config" -d LOCALVERSION_AUTO || true
