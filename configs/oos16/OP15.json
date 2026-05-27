@@ -16,11 +16,11 @@
   "hmbird": false,
   "susfs": true,
   "ds": true,
-  "bbg": true,
+  "bbg": false,
   "bbr": true,
   "ttl": true,
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Beast"
 }
